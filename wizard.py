@@ -18,7 +18,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Dict, List, Optional
 
 DIVIDER = "=" * 62
 THIN = "-" * 50
@@ -59,7 +59,7 @@ def call_claude(prompt: str) -> str:
         return ""
 
 
-def analyse_with_claude(files: dict[str, Optional[str]]) -> dict:
+def analyse_with_claude(files: Dict[str, Optional[str]]) -> dict:
     """
     Ask Claude to extract structured metadata from the service files.
     Returns an empty dict if Claude is unavailable or the response is unparseable.
@@ -129,8 +129,8 @@ def build_compose_block(
     port: int,
     uses_db: bool,
     uses_redis: bool,
-    jwt_callers: list[str],
-    extra_env_vars: list[str],
+    jwt_callers: List[str],
+    extra_env_vars: List[str],
     is_gateway_facing: bool,
 ) -> str:
     image = service_name.replace("_", "-")
@@ -149,7 +149,7 @@ def build_compose_block(
             '      - "host.docker.internal:host-gateway"',
         ]
 
-    env_lines: list[str] = []
+    env_lines: List[str] = []
     if uses_db:
         env_lines.append("      DB_HOST: host.docker.internal")
     if uses_redis:
@@ -182,7 +182,7 @@ def build_compose_block(
 # Step printing
 # ---------------------------------------------------------------------------
 
-def print_step(num: int, title: str, body: list[str]) -> None:
+def print_step(num: int, title: str, body: List[str]) -> None:
     print(f"Step {num}: {title}")
     print(THIN)
     for line in body:
@@ -217,7 +217,7 @@ def main() -> None:
         ".env.example",
         "requirements.txt",
     ]
-    files: dict[str, Optional[str]] = {
+    files: Dict[str, Optional[str]] = {
         name: read_file(service_dir / name) for name in file_names
     }
 
@@ -254,11 +254,11 @@ def main() -> None:
     port: Optional[int] = (cfg or {}).get("port") or ai.get("port")
     uses_db: bool = bool(ai.get("uses_db", False))
     uses_redis: bool = bool(ai.get("uses_redis", False))
-    jwt_callers: list[str] = (
+    jwt_callers: List[str] = (
         list((jwt_cfg or {}).get("permissions", {}).keys())
         or ai.get("jwt_callers", [])
     )
-    extra_env_vars: list[str] = ai.get("extra_env_vars") or []
+    extra_env_vars: List[str] = ai.get("extra_env_vars") or []
 
     print(f"\n  Service name : {service_name}")
     print(f"  Port         : {port or '(not determined)'}")
@@ -441,7 +441,7 @@ def main() -> None:
     # Step: Environment variable summary
     # ------------------------------------------------------------------
     step += 1
-    env_summary: list[str] = []
+    env_summary: List[str] = []
     if uses_db:
         env_summary.append("  DB_HOST=host.docker.internal")
     if uses_redis:
