@@ -276,12 +276,8 @@ def main() -> None:
     print(f"\n{THIN}")
     print("Integration questions:\n")
 
-    is_client_facing = ask_yn("Is this service client-facing?")
-    is_web = False
-    is_gateway_facing = False
-    if is_client_facing:
-        is_web = ask_yn("Is the client a web client (Next.js)?")
-        is_gateway_facing = ask_yn("Is the client kaneru_gateway-facing (mobile/Flutter)?")
+    is_gateway_facing = ask_yn("Should this service be registered as a route in kaneru_gateway (mobile/Flutter clients)?")
+    is_web = ask_yn("Should this service be accessible via the Next.js web frontend?")
 
     # -----------------------------------------------------------------------
     # Generate steps
