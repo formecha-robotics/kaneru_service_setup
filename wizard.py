@@ -159,8 +159,13 @@ def build_compose_block(
     lines.append("    environment:")
     lines.extend(env_lines)
 
+    depends = ["credentials-gateway"]
     if is_gateway_facing:
-        lines += ["    depends_on:", "      - kaneru-gateway"]
+        depends.append("kaneru-gateway")
+
+    lines.append("    depends_on:")
+    for dep in depends:
+        lines.append(f"      - {dep}")
 
     lines += ["    networks: [kaneru_net]", "    restart: unless-stopped"]
     return "\n".join(lines)
