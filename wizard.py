@@ -90,7 +90,7 @@ def analyse_with_claude(files: Dict[str, Optional[str]]) -> dict:
         "- uses_db: true if mysql/postgresql imports or DB references are present\n"
         "- uses_redis: true if redis imports or REDIS references are present\n"
         "- jwt_callers: keys from jwt_config.json permissions map\n"
-        "- extra_env_vars: env vars beyond CREDMGR_* vars and standard DB/Redis vars\n"
+        "- extra_env_vars: env vars beyond CREDMGR_* vars, *_PEM_PATH vars, *_PEM vars, DB_HOST, REDIS_HOST, ENABLE_AUTH, and port vars\n"
         "- Use null for any field you cannot determine\n\n"
         f"{context}"
     )
@@ -240,7 +240,14 @@ def main() -> None:
         list((jwt_cfg or {}).get("permissions", {}).keys())
         or ai.get("jwt_callers", [])
     )
-    extra_env_vars: List[str] = ai.get("extra_env_vars") or []
+    extra_env_vars: List[str] = [
+        v for v in (ai.get("extra_env_vars") or [])
+        if not v.endswith("_PEM_PATH")
+        and not v.endswith("_PEM")
+        and not v.endswith("_PORT")
+        and not v.startswith("CREDMGR_")
+        and v not in ("DB_HOST", "REDIS_HOST", "ENABLE_AUTH")
+    ]
 
     print(f"\n  Service name : {service_name}")
     print(f"  Port         : {port or '(not determined)'}")
