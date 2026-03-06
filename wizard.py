@@ -81,6 +81,7 @@ def analyse_with_claude(files: Dict[str, Optional[str]]) -> dict:
         '  "uses_db": true,\n'
         '  "uses_redis": true,\n'
         '  "jwt_callers": ["kaneru_gateway"],\n'
+        '  "required_credentials": ["smtp", "s3"],\n'
         '  "extra_env_vars": ["GOOGLE_API_KEY"],\n'
         '  "notes": "brief integration notes or null"\n'
         "}\n\n"
@@ -90,6 +91,11 @@ def analyse_with_claude(files: Dict[str, Optional[str]]) -> dict:
         "- uses_db: true if mysql/postgresql imports or DB references are present\n"
         "- uses_redis: true if redis imports or REDIS references are present\n"
         "- jwt_callers: keys from jwt_config.json permissions map\n"
+        "- required_credentials: service-specific credential keys the service needs from the credential registry, "
+        "beyond db, redis, and *_PEM keys (which are handled separately). "
+        "Look for references to external services like SMTP, S3, FCM, Stripe, etc. in the README, "
+        ".env.example, requirements.txt, and config files. Use short lowercase names (e.g. smtp, s3, fcm, stripe). "
+        "Return an empty list if none are found.\n"
         "- extra_env_vars: env vars beyond CREDMGR_* vars, *_PEM_PATH vars, *_PEM vars, DB_HOST, REDIS_HOST, ENABLE_AUTH, and port vars\n"
         "- Use null for any field you cannot determine\n\n"
         f"{context}"
@@ -240,6 +246,7 @@ def main() -> None:
         list((jwt_cfg or {}).get("permissions", {}).keys())
         or ai.get("jwt_callers", [])
     )
+    required_credentials: List[str] = ai.get("required_credentials") or []
     extra_env_vars: List[str] = [
         v for v in (ai.get("extra_env_vars") or [])
         if not v.endswith("_PEM_PATH")
@@ -254,6 +261,8 @@ def main() -> None:
     print(f"  Uses DB      : {uses_db}")
     print(f"  Uses Redis   : {uses_redis}")
     print(f"  JWT callers  : {', '.join(jwt_callers) or '(none detected)'}")
+    if required_credentials:
+        print(f"  Credentials  : {', '.join(required_credentials)}")
     if extra_env_vars:
         print(f"  Extra env    : {', '.join(extra_env_vars)}")
     if ai.get("notes"):
@@ -313,6 +322,8 @@ def main() -> None:
         cred_creds["db"] = "use_domain"
     if uses_redis:
         cred_creds["redis"] = "use_domain"
+    for cred_name in required_credentials:
+        cred_creds[cred_name] = {"<key>": "<value>"}
     for caller in jwt_callers:
         cred_creds[pem_credential_key(caller)] = "-----BEGIN PUBLIC KEY-----\\n...\\n-----END PUBLIC KEY-----"
 
@@ -325,6 +336,7 @@ def main() -> None:
         cred_indented,
         "",
         "  Replace <domain> with your deployment domain (e.g. localhost, kaneru_prod).",
+        "  Replace credential placeholder values with actual connection details.",
         "  Replace PEM placeholder values with actual public key content.",
         "",
         "  Use the pem-format-helper to get JSON-safe PEM strings:",
