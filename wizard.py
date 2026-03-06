@@ -334,23 +334,24 @@ def main() -> None:
     ])
 
     # ------------------------------------------------------------------
-    # Step: Add this service's public key to caller registries
+    # Step: Ensure caller public keys are in this service's registry
     # ------------------------------------------------------------------
     if jwt_callers:
         step += 1
+        caller_keys = ", ".join(pem_credential_key(c) for c in jwt_callers)
         lines = [
-            "  Services that call this service need its public key in their",
-            "  credential registry entry. For each service that will call",
-            f"  {service_name}, add the following credential key:",
+            "  This service verifies incoming JWTs from its callers using their",
+            "  public keys. These must be present in the credential registry entry",
+            f"  for {service_name} (added in Step 2 above).",
             "",
-            f"    Credential key: {pem_credential_key(service_name)}",
-            f"    Value: contents of public.pem (generated in Step 1)",
+            f"  Required credential keys: {caller_keys}",
             "",
-            "  This is typically done by the calling service, not this service.",
-            "  For kaneru_gateway specifically, add the key to kaneru_gateway's",
-            "  registry entry so it can verify tokens from this service.",
+            "  Each value must be the caller's public PEM key content.",
+            "  If a caller does not yet have a key pair, generate one for that",
+            "  service first (openssl genrsa / rsa -pubout) and add its public",
+            "  key to this service's registry entry.",
         ]
-        print_step(step, f"Distribute {service_name} public key to callers", lines)
+        print_step(step, f"Verify caller public keys for {service_name}", lines)
 
     # ------------------------------------------------------------------
     # Step: kaneru_gateway config.json
