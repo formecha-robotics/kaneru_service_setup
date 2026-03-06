@@ -90,7 +90,7 @@ def analyse_with_claude(files: Dict[str, Optional[str]]) -> dict:
         "- uses_db: true if mysql/postgresql imports or DB references are present\n"
         "- uses_redis: true if redis imports or REDIS references are present\n"
         "- jwt_callers: keys from jwt_config.json permissions map\n"
-        "- extra_env_vars: env vars beyond DB_HOST, REDIS_HOST, and *_PEM_PATH vars\n"
+        "- extra_env_vars: env vars beyond CREDMGR_* vars and standard DB/Redis vars\n"
         "- Use null for any field you cannot determine\n\n"
         f"{context}"
     )
@@ -106,30 +106,23 @@ def analyse_with_claude(files: Dict[str, Optional[str]]) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Docker-compose block generation
+# Credential registry helpers
 # ---------------------------------------------------------------------------
 
-def pem_env_var(caller: str) -> str:
-    return f"{caller.upper()}_PEM_PATH"
+def pem_credential_key(caller: str) -> str:
+    """Credential key name for a caller's public PEM in the registry."""
+    return f"{caller.upper()}_PEM"
 
 
-def pem_container_path(caller: str) -> str:
-    """
-    Derive the in-container path for a caller's public PEM.
-    e.g. kaneru_gateway -> /run/secrets/kaneru/public.pem
-         order_gateway  -> /run/secrets/order/public.pem
-         api_gateway    -> /run/secrets/api/public.pem
-    """
-    prefix = caller.replace("_gateway", "").replace("_", "/")
-    return f"/run/secrets/{prefix}/public.pem"
-
+# ---------------------------------------------------------------------------
+# Docker-compose block generation
+# ---------------------------------------------------------------------------
 
 def build_compose_block(
     service_name: str,
     port: int,
     uses_db: bool,
     uses_redis: bool,
-    jwt_callers: List[str],
     extra_env_vars: List[str],
     is_gateway_facing: bool,
 ) -> str:
@@ -149,27 +142,16 @@ def build_compose_block(
             '      - "host.docker.internal:host-gateway"',
         ]
 
-    env_lines: List[str] = []
-    if uses_db:
-        env_lines.append("      DB_HOST: host.docker.internal")
-    if uses_redis:
-        env_lines.append("      REDIS_HOST: host.docker.internal")
-    for caller in jwt_callers:
-        env_lines.append(
-            f"      {pem_env_var(caller)}: {pem_container_path(caller)}"
-        )
+    env_lines: List[str] = [
+        "      CREDMGR_SIGNING_KEY_B64: <from credentials_wizard output>",
+        "      CREDMGR_URL: http://credentials-gateway:8664",
+        "      CREDMGR_DOMAIN: <domain>",
+    ]
     for var in extra_env_vars:
         env_lines.append(f"      {var}: <SET_VALUE>")
 
-    if env_lines:
-        lines.append("    environment:")
-        lines.extend(env_lines)
-
-    if jwt_callers:
-        lines += [
-            "    volumes:",
-            "      - ../secrets/jwt/:/run/secrets:ro",
-        ]
+    lines.append("    environment:")
+    lines.extend(env_lines)
 
     if is_gateway_facing:
         lines += ["    depends_on:", "      - kaneru-gateway"]
@@ -293,41 +275,82 @@ def main() -> None:
     # Step: Generate JWT key pair
     # ------------------------------------------------------------------
     step += 1
-    key_base = f"../secrets/jwt/{service_name}"
     print_step(step, f"Generate JWT key pair for {service_name}", [
-        f"  $ mkdir -p {key_base}",
-        f"  $ openssl genrsa -out {key_base}/private.pem 2048",
-        f"  $ openssl rsa -in {key_base}/private.pem -pubout \\",
-        f"            -out {key_base}/public.pem",
+        "  $ openssl genrsa -out private.pem 2048",
+        "  $ openssl rsa -in private.pem -pubout -out public.pem",
         "",
-        "  private.pem — kept secret, used by this service to sign outbound JWTs.",
-        "  public.pem  — distributed to any caller that needs to verify this service's JWTs.",
+        "  private.pem — used by this service to sign outbound JWTs.",
+        "  public.pem  — added to other services' credential registry entries",
+        f"               as {pem_credential_key(service_name)} so they can verify",
+        "               this service's tokens.",
+        "",
+        "  These keys will be added to the credential registry in a later step.",
         "  NEVER commit PEM files to source control.",
     ])
 
     # ------------------------------------------------------------------
-    # Step: Verify caller public keys exist
+    # Step: Register service in credential registry
+    # ------------------------------------------------------------------
+    step += 1
+    cred_input = {
+        "<domain>": {
+            "services": {
+                service_name: {
+                    "credentials": {}
+                }
+            }
+        }
+    }
+    cred_creds = cred_input["<domain>"]["services"][service_name]["credentials"]
+    if uses_db:
+        cred_creds["db"] = "use_domain"
+    if uses_redis:
+        cred_creds["redis"] = "use_domain"
+    for caller in jwt_callers:
+        cred_creds[pem_credential_key(caller)] = "-----BEGIN PUBLIC KEY-----\\n...\\n-----END PUBLIC KEY-----"
+
+    cred_json = json.dumps(cred_input, indent=4)
+    cred_indented = "\n".join("    " + l for l in cred_json.splitlines())
+
+    print_step(step, f"Register {service_name} in the credential registry", [
+        "  Create a JSON input file (e.g. new_service.json):",
+        "",
+        cred_indented,
+        "",
+        "  Replace <domain> with your deployment domain (e.g. localhost, kaneru_prod).",
+        "  Replace PEM placeholder values with actual public key content.",
+        "",
+        "  Use the pem-format-helper to get JSON-safe PEM strings:",
+        "    $ python3 credentials_wizard.py pem-format-helper /path/to/caller_public.pem",
+        "",
+        "  Then register:",
+        "    $ python3 credentials_wizard.py --enc registry.enc --priv keys/private.pem \\",
+        "          --pub keys/public.pem add --in new_service.json",
+        "",
+        "  Save the printed CREDMGR_SIGNING_KEY_B64 — it is needed for deployment.",
+        "",
+        "  If db/redis use 'use_domain', ensure those domain-level credentials exist.",
+        "  If not, add them or provide service-specific credential blobs instead.",
+    ])
+
+    # ------------------------------------------------------------------
+    # Step: Add this service's public key to caller registries
     # ------------------------------------------------------------------
     if jwt_callers:
         step += 1
         lines = [
-            "  jwt_config.json declares the following permitted callers.",
-            "  Each caller's public key must be present on disk before deployment:",
+            "  Services that call this service need its public key in their",
+            "  credential registry entry. For each service that will call",
+            f"  {service_name}, add the following credential key:",
             "",
+            f"    Credential key: {pem_credential_key(service_name)}",
+            f"    Value: contents of public.pem (generated in Step 1)",
+            "",
+            "  This is typically done by the calling service, not this service.",
+            "  For kaneru_gateway specifically, add the key to kaneru_gateway's",
+            "  registry entry so it can verify tokens from this service.",
         ]
-        for caller in jwt_callers:
-            caller_slug = caller.replace("_gateway", "")
-            lines += [
-                f"    Caller : {caller}",
-                f"    Env var: {pem_env_var(caller)}",
-                f"    Source : ../secrets/jwt/{caller_slug}/public.pem",
-                "",
-            ]
-        lines.append(
-            "  If a caller's key directory does not exist, run the equivalent of Step 1"
-        )
-        lines.append("  in that service's setup to generate and place the key.")
-        print_step(step, "Verify caller public keys exist", lines)
+        print_step(step, f"Distribute {service_name} public key to callers", lines)
 
     # ------------------------------------------------------------------
     # Step: kaneru_gateway config.json
@@ -383,6 +406,10 @@ def main() -> None:
                     "",
                     "  Scope convention: <service_name>.<route_suffix>",
                     "  Only list the scopes kaneru_gateway actually needs to call.",
+                    "",
+                    "  Also add KANERU_GATEWAY_PEM to this service's credential registry",
+                    "  entry (see Step 2) if not already present.",
+                    "",
                     "  Rebuilding the image is required after editing jwt_config.json.",
                 ],
             )
@@ -395,9 +422,9 @@ def main() -> None:
         print_step(step, "[TODO] Configure Next.js gateway", [
             "  Next.js configuration is not yet automated by this wizard.",
             "  Manual steps required:",
-            "    • Add an API route handler for this service in the Next.js application.",
-            "    • Configure the service URL and port in Next.js environment config.",
-            "    • Implement JWT signing for outbound requests to this service.",
+            "    - Add an API route handler for this service in the Next.js application.",
+            "    - Configure the service URL and port in Next.js environment config.",
+            "    - Implement JWT signing for outbound requests to this service.",
         ])
 
     # ------------------------------------------------------------------
@@ -410,7 +437,6 @@ def main() -> None:
             port,
             uses_db,
             uses_redis,
-            jwt_callers,
             extra_env_vars,
             is_gateway_facing,
         )
@@ -419,8 +445,8 @@ def main() -> None:
             "",
             block,
             "",
-            "  Review the volume path (../secrets/jwt/) — adjust if your secrets",
-            "  directory is located elsewhere relative to the compose file.",
+            "  Set CREDMGR_SIGNING_KEY_B64 to the value printed by credentials_wizard.",
+            "  Set CREDMGR_DOMAIN to your deployment domain (e.g. localhost, kaneru_prod).",
             "  Add any service-specific extra_env_vars values.",
         ])
     else:
@@ -430,32 +456,33 @@ def main() -> None:
             "  existing entry in docker-compose.yaml, e.g. kaneru-jobs or shipping-gateway.",
             "  Key fields to include:",
             f"    image: {service_name.replace('_', '-')}",
-            "    ports, extra_hosts, environment (*_PEM_PATH vars), volumes, networks",
+            "    ports, extra_hosts, environment (CREDMGR_* vars), networks",
         ])
 
     # ------------------------------------------------------------------
-    # Step: Environment variable summary
+    # Step: Environment variable checklist
     # ------------------------------------------------------------------
     step += 1
-    env_summary: List[str] = []
-    if uses_db:
-        env_summary.append("  DB_HOST=host.docker.internal")
-    if uses_redis:
-        env_summary.append("  REDIS_HOST=host.docker.internal")
-    for caller in jwt_callers:
-        caller_slug = caller.replace("_gateway", "")
-        env_summary.append(
-            f"  {pem_env_var(caller)}=../secrets/jwt/{caller_slug}/public.pem"
-        )
+    env_summary: List[str] = [
+        "  CREDMGR_SIGNING_KEY_B64=<from credentials_wizard output>",
+        "  CREDMGR_URL=http://credentials-gateway:8664",
+        "  CREDMGR_DOMAIN=<deployment domain>",
+    ]
     for var in extra_env_vars:
         env_summary.append(f"  {var}=<set appropriate value>")
-    if not env_summary:
-        env_summary.append("  (no environment variables identified beyond docker-compose defaults)")
 
     print_step(step, "Environment variable checklist", [
         "  Ensure these are set in docker-compose.yaml or your deployment config:",
         "",
         *env_summary,
+        "",
+        "  DB and Redis credentials are loaded from the credential registry at",
+        "  startup via get_credentials() — do NOT set DB_HOST, REDIS_HOST, or",
+        "  passwords as environment variables.",
+        "",
+        "  Caller PEM public keys are also loaded from the credential registry",
+        f"  (as {', '.join(pem_credential_key(c) for c in jwt_callers) or 'N/A'}).",
+        "  Do NOT set *_PEM_PATH environment variables.",
     ])
 
     # ------------------------------------------------------------------
